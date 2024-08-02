@@ -136,6 +136,8 @@ platform_do_upgrade() {
 	glinet,gl-xe3000|\
 	huasifei,wh3000|\
 	huasifei,wh3000-pro|\
+	lunzn,s20l|\
+	lunzn,s20p|\
 	smartrg,sdg-8612|\
 	smartrg,sdg-8614|\
 	smartrg,sdg-8622|\
@@ -363,6 +365,8 @@ platform_copy_config() {
 	huasifei,wh3000|\
 	huasifei,wh3000-pro|\
 	jdcloud,re-cp-03|\
+	lunzn,s20l|\
+	lunzn,s20p|\
 	nradio,c8-668gl|\
 	smartrg,sdg-8612|\
 	smartrg,sdg-8614|\

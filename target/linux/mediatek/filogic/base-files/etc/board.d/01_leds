@@ -133,6 +133,12 @@ keenetic,kn-3711|\
 keenetic,kn-3811)
 	ucidef_set_led_netdev "internet" "internet" "green:wan" "wan" "link"
 	;;
+lunzn,s20p)
+	ucidef_set_led_netdev "lan-0" "LAN-0" "mdio-bus:05:amber:lan" "lan6" "link_1000 link_2500 tx rx"
+	ucidef_set_led_netdev "lan-1" "LAN-1" "mdio-bus:05:green:lan" "lan6" "link_10 link_100 tx rx"
+	ucidef_set_led_netdev "wan-0" "WAN-0" "mdio-bus:07:amber:wan" "eth1" "link_1000 link_2500 tx rx"
+	ucidef_set_led_netdev "wan-1" "WAN-1" "mdio-bus:07:green:wan" "eth1" "link_10 link_100 tx rx"
+	;;
 mercusys,mr80x-v3)
 	ucidef_set_led_netdev "lan1" "lan-1" "green:lan-1" "lan1" "link tx rx"
 	ucidef_set_led_netdev "lan2" "lan-2" "green:lan-2" "lan2" "link tx rx"
