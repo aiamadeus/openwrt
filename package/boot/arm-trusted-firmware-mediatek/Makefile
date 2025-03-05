@@ -13,9 +13,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/mtk-openwrt/arm-trusted-firmware.git
-PKG_SOURCE_DATE:=2025-02-12
-PKG_SOURCE_VERSION:=e090770684e775711a624e68e0b28112227a4c38
-PKG_MIRROR_HASH:=1ff9d60f3677aadd9a6716e860985987ba7157bd28ce831112e05c0b3170939a
+PKG_SOURCE_DATE:=2024-01-17
+PKG_SOURCE_VERSION:=bacca82a8cac369470df052a9d801a0ceb9b74ca
+PKG_MIRROR_HASH:=1138649f64ac3982330925c38c795ca6860289adbd95755991f80afa30ebdea7
 
 PKG_MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 
@@ -146,9 +146,25 @@ define Trusted-Firmware-A/mt7981-ram-ddr4
   DEFAULT:=TARGET_mediatek_filogic
 endef
 
+define Trusted-Firmware-A/mt7981-nor-ddr4
+  NAME:=MediaTek MT7981 (SPI-NOR, DDR4)
+  BOOT_DEVICE:=nor
+  BUILD_SUBTARGET:=filogic
+  PLAT:=mt7981
+  DDR_TYPE:=ddr4
+endef
+
 define Trusted-Firmware-A/mt7981-emmc-ddr4
   NAME:=MediaTek MT7981 (eMMC, DDR4)
   BOOT_DEVICE:=emmc
+  BUILD_SUBTARGET:=filogic
+  PLAT:=mt7981
+  DDR_TYPE:=ddr4
+endef
+
+define Trusted-Firmware-A/mt7981-sdmmc-ddr4
+  NAME:=MediaTek MT7981 (SD card, DDR4)
+  BOOT_DEVICE:=sdmmc
   BUILD_SUBTARGET:=filogic
   PLAT:=mt7981
   DDR_TYPE:=ddr4
@@ -179,14 +195,6 @@ define Trusted-Firmware-A/mt7981-ram-ddr3
   RAM_BOOT_UART_DL:=1
   HIDDEN:=
   DEFAULT:=TARGET_mediatek_filogic
-endef
-
-define Trusted-Firmware-A/mt7981-nor-ddr4
-  NAME:=MediaTek MT7981 (SPI-NOR, DDR4)
-  BOOT_DEVICE:=nor
-  BUILD_SUBTARGET:=filogic
-  PLAT:=mt7981
-  DDR_TYPE:=ddr4
 endef
 
 define Trusted-Firmware-A/mt7981-emmc-ddr3
@@ -221,6 +229,15 @@ define Trusted-Firmware-A/mt7981-spim-nand-ddr3
   DDR_TYPE:=ddr3
 endef
 
+define Trusted-Firmware-A/mt7981-spim-nand-ubi-ddr4
+  NAME:=MediaTek MT7981 (SPI-NAND via SPIM, DDR4)
+  BOOT_DEVICE:=spim-nand
+  BUILD_SUBTARGET:=filogic
+  PLAT:=mt7981
+  DDR_TYPE:=ddr4
+  USE_UBI:=1
+endef
+
 define Trusted-Firmware-A/mt7986-ram-ddr4
   NAME:=MediaTek MT7986 (RAM, DDR4)
   BOOT_DEVICE:=ram
@@ -230,15 +247,6 @@ define Trusted-Firmware-A/mt7986-ram-ddr4
   RAM_BOOT_UART_DL:=1
   HIDDEN:=
   DEFAULT:=TARGET_mediatek_filogic
-endef
-
-define Trusted-Firmware-A/mt7981-spim-nand-ubi-ddr4
-  NAME:=MediaTek MT7981 (SPI-NAND via SPIM, DDR4)
-  BOOT_DEVICE:=spim-nand
-  BUILD_SUBTARGET:=filogic
-  PLAT:=mt7981
-  DDR_TYPE:=ddr4
-  USE_UBI:=1
 endef
 
 define Trusted-Firmware-A/mt7986-nor-ddr4
@@ -533,6 +541,7 @@ TFA_TARGETS:= \
 	mt7981-spim-nand-ubi-ddr4 \
 	mt7981-ram-ddr4 \
 	mt7981-emmc-ddr4 \
+	mt7981-sdmmc-ddr4 \
 	mt7981-spim-nand-ddr4 \
 	mt7986-ram-ddr3 \
 	mt7986-emmc-ddr3 \
