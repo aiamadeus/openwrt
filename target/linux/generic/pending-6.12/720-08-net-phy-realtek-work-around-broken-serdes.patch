@@ -16,7 +16,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 --- a/drivers/net/phy/realtek/realtek_main.c
 +++ b/drivers/net/phy/realtek/realtek_main.c
 @@ -1345,6 +1345,22 @@ static int rtl822xb_config_init(struct p
- 	return rtl822x_set_serdes_option_mode(phydev, false);
+ 	return ret;
  }
  
 +static int rtl822xb_config_init_war(struct phy_device *phydev)

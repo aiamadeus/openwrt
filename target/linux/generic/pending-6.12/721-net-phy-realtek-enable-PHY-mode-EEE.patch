@@ -1,0 +1,37 @@
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -166,6 +166,9 @@
+ #define RTL8221B_PHYCR1_ALDPS_EN		BIT(2)
+ #define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
+ 
++#define RTL8221B_PHYCR2				0xa432
++#define RTL8221B_PHYCR2_PHY_EEE_ENABLE		BIT(5)
++
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+ 
+@@ -1335,6 +1338,12 @@ static int rtl822x_set_serdes_option_mod
+ 	return 0;
+ }
+ 
++static int rtl822x_config_phy_eee(struct phy_device *phydev)
++{
++	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_PHYCR2,
++				RTL8221B_PHYCR2_PHY_EEE_ENABLE);
++}
++
+ static int rtl822x_config_init(struct phy_device *phydev)
+ {
+ 	return rtl822x_set_serdes_option_mode(phydev, true);
+@@ -1357,7 +1366,10 @@ static int rtl822xb_config_init(struct p
+ 		ret = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, RTL8221B_PHYCR1,
+ 					 RTL8221B_PHYCR1_ALDPS_EN |
+ 					 RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN);
+-	return ret;
++	if (ret < 0)
++		return ret;
++
++	return rtl822x_config_phy_eee(phydev);
+ }
+ 
+ static int rtl822xb_config_init_war(struct phy_device *phydev)
