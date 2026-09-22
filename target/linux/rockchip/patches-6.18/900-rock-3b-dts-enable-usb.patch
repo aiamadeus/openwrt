@@ -1,0 +1,29 @@
+--- a/arch/arm64/boot/dts/rockchip/rk3568-rock-3b.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3568-rock-3b.dts
+@@ -758,6 +758,14 @@ &usb_host0_xhci {
+ 	status = "okay";
+ };
+ 
++&usb_host1_ehci {
++	status = "okay";
++};
++
++&usb_host1_ohci {
++	status = "okay";
++};
++
+ &usb_host1_xhci {
+ 	status = "okay";
+ };
+@@ -780,6 +788,11 @@ &usb2phy1 {
+ 	status = "okay";
+ };
+ 
++&usb2phy1_host {
++	phy-supply = <&vcc3v3_pi6c_03>;
++	status = "okay";
++};
++
+ &usb2phy1_otg {
+ 	phy-supply = <&vcc5v0_usb_host>;
+ 	status = "okay";
