@@ -24,15 +24,15 @@ Signed-off-by: Jakub Kicinski <kuba@kernel.org>
 
 --- a/drivers/net/phy/realtek/realtek_main.c
 +++ b/drivers/net/phy/realtek/realtek_main.c
-@@ -201,6 +201,7 @@
- #define RTL8221B_PHYCR1_PHYAD_0_EN		BIT(13)
+@@ -190,6 +190,7 @@
+ #define RTL8224_SRAM_RTCT_LEN(pair)		(0x8028 + (pair) * 4)
  
  #define RTL8224_VND1_MDI_PAIR_SWAP		0xa90
 +#define RTL8224_VND1_MDI_POLARITY_SWAP		0xa94
  
  #define RTL8366RB_POWER_SAVE			0x15
  #define RTL8366RB_POWER_SAVE_ON			BIT(12)
-@@ -2851,9 +2852,40 @@ static int rtl8224_mdi_config_order(stru
+@@ -2427,9 +2428,40 @@ static int rtl8224_mdi_config_order(stru
  					  order ? BIT(port_offset) : 0);
  }
  
