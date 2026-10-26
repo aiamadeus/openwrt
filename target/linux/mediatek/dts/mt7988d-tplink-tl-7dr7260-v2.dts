@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+
+/dts-v1/;
+#include "mt7988d-tplink-tl-7dr72xx.dtsi"
+
+/ {
+	model = "TP-Link TL-7DR7260 v2";
+	compatible = "tplink,tl-7dr7260-v2", "mediatek,mt7988d";
+
+	aliases {
+		label-mac-device = &gmac2;
+		led-boot = &led_status_green;
+		led-failsafe = &led_status_red;
+		led-running = &led_status_green;
+		led-upgrade = &led_status_red;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_status_red: status-red {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_RED>;
+			gpios = <&pio 28 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_green: status-green {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_GREEN>;
+			gpios = <&pio 54 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&gmac1 {
+	nvmem-cells = <&macaddr_config_1c 1>;
+	nvmem-cell-names = "mac-address";
+};
+
+&gmac2 {
+	nvmem-cells = <&macaddr_config_1c 0>;
+	nvmem-cell-names = "mac-address";
+	phy-mode = "10gbase-r";
+	status = "okay";
+
+	fixed-link {
+		speed = <10000>;
+		full-duplex;
+		pause;
+	};
+};
+
+&mdio_bus {
+	switch@29 {
+		compatible = "realtek,rtl8372";
+		reg = <29>;
+		reset-gpios = <&pio 1 GPIO_ACTIVE_LOW>;
+
+		mdio {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			phy4: ethernet-phy@4 {
+				reg = <4>;
+			};
+
+			phy5: ethernet-phy@5 {
+				reg = <5>;
+			};
+
+			phy6: ethernet-phy@6 {
+				reg = <6>;
+			};
+
+			phy7: ethernet-phy@7 {
+				reg = <7>;
+			};
+		};
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@3 {
+				reg = <3>;
+				ethernet = <&gmac2>;
+				phy-mode = "10gbase-r";
+
+				fixed-link {
+					speed = <10000>;
+					full-duplex;
+					pause;
+				};
+			};
+
+			port@4 {
+				reg = <4>;
+				label = "lan1";
+				phy-handle = <&phy4>;
+				phy-mode = "internal";
+			};
+
+			port@5 {
+				reg = <5>;
+				label = "lan2";
+				phy-handle = <&phy5>;
+				phy-mode = "internal";
+			};
+
+			port@6 {
+				reg = <6>;
+				label = "lan3";
+				phy-handle = <&phy6>;
+				phy-mode = "internal";
+			};
+
+			port@7 {
+				reg = <7>;
+				label = "lan4";
+				phy-handle = <&phy7>;
+				phy-mode = "internal";
+			};
+		};
+	};
+};
+
+&switch {
+	status = "disabled";
+};
