@@ -948,6 +948,26 @@ endef
 $(eval $(call KernelPackage,dsa-rtl8365mb))
 
 
+define KernelPackage/dsa-rtl8372
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8372 switch DSA support
+  DEPENDS:=+kmod-dsa-realtek @!TARGET_x86 @!TARGET_bcm47xx @!TARGET_uml
+  KCONFIG:= \
+	CONFIG_NET_DSA_REALTEK_RTL8372 \
+	CONFIG_NET_DSA_TAG_RTL8_4
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/dsa/realtek/rtl8372.ko \
+	$(LINUX_DIR)/net/dsa/tag_rtl8_4.ko
+  AUTOLOAD:=$(call AutoLoad,42,rtl8372,1)
+endef
+
+define KernelPackage/dsa-rtl8372/description
+  DSA based kernel modules for the Realtek RTL8372 switch family
+endef
+
+$(eval $(call KernelPackage,dsa-rtl8372))
+
+
 define KernelPackage/dsa-ks8995
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Micrel/Kendin KS8995 Ethernet DSA Switch
