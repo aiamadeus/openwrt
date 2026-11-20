@@ -1,0 +1,394 @@
+From: Vlad Banea <montrealtango@gmail.com>
+Subject: [RFC net-next 4/5] r8169: add the type 3 RX descriptor
+Date: Wed, 11 Nov 2026 17:01:13 -0500
+
+The RTL8125A/B family has a 32-byte RX descriptor ("type 3" in Realtek's
+driver), which the RTL8125B requires with RSS. Its second half is laid
+out like RX_DESC_TYPE_RSS, so add RX_DESC_TYPE_V3 as a 16-byte header
+followed by a struct RxDesc and reuse the RSS accessors.
+
+Differences from RX_DESC_TYPE_RSS:
+ - FirstFrag/LastFrag at bits 25/24 and RES/RUNT/RWT/CRC at 20-17 of
+   opts1;
+ - one checksum flag per protocol in opts2, and only the matching
+   protocol's failure flag is valid;
+ - the RSS hash in rss_result, its type in hdr_info;
+ - selected by RxConfig bit 24, set before the receiver is enabled.
+
+No chip uses it yet.
+
+Signed-off-by: Vlad Banea <montrealtango@gmail.com>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 158 +++++++++++++++++++---
+ 1 file changed, 136 insertions(+), 22 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -74,7 +74,6 @@
+ #define NUM_TX_DESC	256	/* Number of Tx descriptor registers */
+ #define NUM_RX_DESC	256	/* Number of Rx descriptor registers */
+ #define R8169_TX_RING_BYTES	(NUM_TX_DESC * sizeof(struct TxDesc))
+-#define R8169_RX_RING_BYTES	(NUM_RX_DESC * sizeof(struct RxDesc))
+ #define R8169_TX_STOP_THRS	(MAX_SKB_FRAGS + 1)
+ #define R8169_TX_START_THRS	(2 * R8169_TX_STOP_THRS)
+ #define R8169_MAX_RX_QUEUES	8
+@@ -488,6 +487,26 @@ enum rtl8125_registers {
+ #define RX_VLAN_INNER_8125	BIT(22)
+ #define RX_VLAN_OUTER_8125	BIT(23)
+ #define RX_VLAN_8125		(RX_VLAN_INNER_8125 | RX_VLAN_OUTER_8125)
++#define RX_DESC_V3_8125		BIT(24)	/* type 3 (32-byte) RX descriptors */
++
++/* RX_DESC_TYPE_V3 status bits, opts1 unless noted */
++#define RX_FIRST_FRAG_V3	BIT(25)
++#define RX_LAST_FRAG_V3		BIT(24)
++#define RX_RES_V3		BIT(20)
++#define RX_RUNT_V3		BIT(19)
++#define RX_RWT_V3		BIT(18)
++#define RX_CRC_V3		BIT(17)
++#define RX_UDPT_V3		BIT(29)	/* opts2: UDP packet */
++#define RX_TCPT_V3		BIT(28)	/* opts2: TCP packet */
++#define RX_IPF_V3		BIT(26)	/* opts2: IP checksum failed */
++#define RX_UDPF_V3		BIT(25)	/* opts2: UDP checksum failed */
++#define RX_TCPF_V3		BIT(24)	/* opts2: TCP checksum failed */
++#define RXS_RSS_UDP_V3		BIT(9)	/* hdr_info */
++#define RXS_RSS_IPV4_V3		BIT(10)
++#define RXS_RSS_IPV6_V3		BIT(12)
++#define RXS_RSS_TCP_V3		BIT(13)
++#define RXS_RSS_L3_V3		(RXS_RSS_IPV4_V3 | RXS_RSS_IPV6_V3)
++#define RXS_RSS_L4_V3		(RXS_RSS_TCP_V3 | RXS_RSS_UDP_V3)
+ 
+ #define RX_FETCH_DFLT_8125	(8 << 27)
+ 
+@@ -736,6 +755,19 @@ struct RxDesc {
+ 	};
+ };
+ 
++/* 32-byte RX descriptor of the RTL8125A/B family ("type 3") */
++struct RxDescV3 {
++	__le32 rsv1;
++	__le32 rsv2;
++	__le32 rss_result;
++	__le16 hdr_buf_len;
++	__le16 hdr_info;
++	struct RxDesc desc;
++};
++
++static_assert(sizeof(struct RxDesc) == 16);
++static_assert(sizeof(struct RxDescV3) == 32);
++
+ struct ring_info {
+ 	struct sk_buff	*skb;
+ 	u32		len;
+@@ -808,6 +840,7 @@ enum rtl_dash_type {
+ enum rx_desc_type {
+ 	RX_DESC_TYPE_DEFAULT,
+ 	RX_DESC_TYPE_RSS,
++	RX_DESC_TYPE_V3,	/* 32-byte struct RxDescV3 */
+ };
+ 
+ struct rtl8169_rx_ring {
+@@ -2104,6 +2137,7 @@ static void rtl8169_rx_vlan_tag(struct r
+ 
+ 	switch (tp->init_rx_desc_type) {
+ 	case RX_DESC_TYPE_RSS:
++	case RX_DESC_TYPE_V3:
+ 		opts2 = le32_to_cpu(desc->rss_opts2);
+ 		break;
+ 	default:
+@@ -2809,7 +2843,9 @@ static void rtl_init_rxcfg(struct rtl816
+ 		break;
+ 	case RTL_GIGA_MAC_VER_63 ... RTL_GIGA_MAC_VER_LAST:
+ 		RTL_W32(tp, RxConfig, RX_FETCH_DFLT_8125 | RX_DMA_BURST |
+-			RX_PAUSE_SLOT_ON);
++			RX_PAUSE_SLOT_ON |
++			(tp->init_rx_desc_type == RX_DESC_TYPE_V3 ?
++			 RX_DESC_V3_8125 : 0));
+ 		break;
+ 	default:
+ 		RTL_W32(tp, RxConfig, RX128_INT_EN | RX_DMA_BURST);
+@@ -2817,12 +2853,36 @@ static void rtl_init_rxcfg(struct rtl816
+ 	}
+ }
+ 
++/* RX_DESC_TYPE_RSS and RX_DESC_TYPE_V3 share the address/opts2/opts1 order */
++static bool rtl8169_rx_desc_rss_layout(struct rtl8169_private *tp)
++{
++	return tp->init_rx_desc_type != RX_DESC_TYPE_DEFAULT;
++}
++
++static size_t rtl8169_rx_ring_bytes(struct rtl8169_private *tp)
++{
++	if (tp->init_rx_desc_type == RX_DESC_TYPE_V3)
++		return NUM_RX_DESC * sizeof(struct RxDescV3);
++
++	return NUM_RX_DESC * sizeof(struct RxDesc);
++}
++
++static struct RxDesc *rtl8169_rx_desc(struct rtl8169_private *tp,
++				      struct rtl8169_rx_ring *ring,
++				      unsigned int index)
++{
++	if (tp->init_rx_desc_type == RX_DESC_TYPE_V3)
++		return &((struct RxDescV3 *)ring->rx_desc_array)[index].desc;
++
++	return &ring->rx_desc_array[index];
++}
++
+ static void rtl8169_rx_desc_init(struct rtl8169_private *tp)
+ {
+ 	for (int i = 0; i < tp->num_rx_rings; i++) {
+ 		struct rtl8169_rx_ring *ring = &tp->rx_ring[i];
+ 
+-		memset(ring->rx_desc_array, 0x0, R8169_RX_RING_BYTES);
++		memset(ring->rx_desc_array, 0x0, rtl8169_rx_ring_bytes(tp));
+ 	}
+ }
+ 
+@@ -4523,6 +4583,9 @@ static void rtl_hw_start(struct  rtl8169
+ 	/* Initially a 10 us delay. Turned it into a PCI commit. - FR */
+ 	rtl_pci_commit(tp);
+ 
++	/* Select the 32-byte descriptor before the receiver is enabled */
++	if (tp->init_rx_desc_type == RX_DESC_TYPE_V3)
++		rtl_init_rxcfg(tp);
+ 	RTL_W8(tp, ChipCmd, CmdTxEnb | CmdRxEnb);
+ 	rtl_init_rxcfg(tp);
+ 	rtl_set_tx_config_registers(tp);
+@@ -4560,6 +4623,7 @@ static void rtl8169_mark_to_asic(struct
+ 
+ 	switch (tp->init_rx_desc_type) {
+ 	case RX_DESC_TYPE_RSS:
++	case RX_DESC_TYPE_V3:
+ 		eor = le32_to_cpu(desc->rss_opts1) & RingEnd;
+ 		desc->rss_opts2 = cpu_to_le32(0);
+ 		/* Force memory writes to complete before releasing descriptor */
+@@ -4579,7 +4643,7 @@ static void rtl8169_mark_to_asic(struct
+ static struct page *rtl8169_alloc_rx_data(struct rtl8169_private *tp,
+ 					  struct rtl8169_rx_ring *ring, unsigned int index)
+ {
+-	struct RxDesc *desc = ring->rx_desc_array + index;
++	struct RxDesc *desc = rtl8169_rx_desc(tp, ring, index);
+ 	struct device *d = tp_to_dev(tp);
+ 	int node = dev_to_node(d);
+ 	dma_addr_t mapping;
+@@ -4597,7 +4661,7 @@ static struct page *rtl8169_alloc_rx_dat
+ 	}
+ 
+ 	ring->rx_buf_dma_addr[index] = mapping;
+-	if (tp->init_rx_desc_type == RX_DESC_TYPE_RSS)
++	if (rtl8169_rx_desc_rss_layout(tp))
+ 		desc->rss_addr = cpu_to_le64(mapping);
+ 	else
+ 		desc->addr = cpu_to_le64(mapping);
+@@ -4609,6 +4673,7 @@ static struct page *rtl8169_alloc_rx_dat
+ static void rtl8169_rx_clear(struct rtl8169_private *tp,
+ 			     struct rtl8169_rx_ring *ring)
+ {
++	struct RxDesc *desc;
+ 	int i;
+ 
+ 	for (i = 0; i < NUM_RX_DESC && ring->rx_databuff[i]; i++) {
+@@ -4618,12 +4683,13 @@ static void rtl8169_rx_clear(struct rtl8
+ 		__free_pages(ring->rx_databuff[i], get_order(R8169_RX_BUF_SIZE));
+ 		ring->rx_databuff[i] = NULL;
+ 		ring->rx_buf_dma_addr[i] = 0;
+-		if (tp->init_rx_desc_type == RX_DESC_TYPE_RSS) {
+-			ring->rx_desc_array[i].rss_addr = 0;
+-			ring->rx_desc_array[i].rss_opts1 = 0;
++		desc = rtl8169_rx_desc(tp, ring, i);
++		if (rtl8169_rx_desc_rss_layout(tp)) {
++			desc->rss_addr = 0;
++			desc->rss_opts1 = 0;
+ 		} else {
+-			ring->rx_desc_array[i].addr = 0;
+-			ring->rx_desc_array[i].opts1 = 0;
++			desc->addr = 0;
++			desc->opts1 = 0;
+ 		}
+ 	}
+ }
+@@ -4632,6 +4698,7 @@ static void rtl8169_mark_as_last_descrip
+ {
+ 	switch (tp->init_rx_desc_type) {
+ 	case RX_DESC_TYPE_RSS:
++	case RX_DESC_TYPE_V3:
+ 		desc->rss_opts1 |= cpu_to_le32(RingEnd);
+ 		break;
+ 	default:
+@@ -4656,7 +4723,7 @@ static int rtl8169_rx_fill(struct rtl816
+ 	}
+ 
+ 	/* mark as last descriptor in the ring */
+-	rtl8169_mark_as_last_descriptor(tp, &ring->rx_desc_array[NUM_RX_DESC - 1]);
++	rtl8169_mark_as_last_descriptor(tp, rtl8169_rx_desc(tp, ring, NUM_RX_DESC - 1));
+ 
+ 	return 0;
+ }
+@@ -4669,7 +4736,7 @@ static int rtl8169_alloc_rx_desc(struct
+ 	for (int i = 0; i < tp->num_rx_rings; i++) {
+ 		ring = &tp->rx_ring[i];
+ 		ring->rx_desc_array = dma_alloc_coherent(&pdev->dev,
+-							 R8169_RX_RING_BYTES,
++							 rtl8169_rx_ring_bytes(tp),
+ 							 &ring->rx_phy_addr,
+ 							 GFP_KERNEL);
+ 		if (!ring->rx_desc_array)
+@@ -4687,7 +4754,7 @@ static void rtl8169_free_rx_desc(struct
+ 		ring = &tp->rx_ring[i];
+ 		if (ring->rx_desc_array) {
+ 			dma_free_coherent(&pdev->dev,
+-					  R8169_RX_RING_BYTES,
++					  rtl8169_rx_ring_bytes(tp),
+ 					  ring->rx_desc_array,
+ 					  ring->rx_phy_addr);
+ 			ring->rx_desc_array = NULL;
+@@ -4822,11 +4889,12 @@ static void rtl8169_rx_desc_reset(struct
+ 		struct rtl8169_rx_ring *ring = &tp->rx_ring[i];
+ 
+ 		for (int j = 0; j < NUM_RX_DESC; j++) {
++			struct RxDesc *desc = rtl8169_rx_desc(tp, ring, j);
+ 			dma_addr_t phy_addr = ring->rx_buf_dma_addr[j];
+ 
+-			if (tp->init_rx_desc_type == RX_DESC_TYPE_RSS)
+-				ring->rx_desc_array[j].rss_addr = cpu_to_le64(phy_addr);
+-			rtl8169_mark_to_asic(tp, ring->rx_desc_array + j);
++			if (rtl8169_rx_desc_rss_layout(tp))
++				desc->rss_addr = cpu_to_le64(phy_addr);
++			rtl8169_mark_to_asic(tp, desc);
+ 		}
+ 	}
+ }
+@@ -5290,9 +5358,13 @@ static void rtl_tx(struct net_device *de
+ 	}
+ }
+ 
+-static inline int rtl8169_fragmented_frame(u32 status)
++static inline int rtl8169_fragmented_frame(struct rtl8169_private *tp,
++					   u32 status)
+ {
+-	return (status & (FirstFrag | LastFrag)) != (FirstFrag | LastFrag);
++	u32 frags = tp->init_rx_desc_type == RX_DESC_TYPE_V3 ?
++		    RX_FIRST_FRAG_V3 | RX_LAST_FRAG_V3 : FirstFrag | LastFrag;
++
++	return (status & frags) != frags;
+ }
+ 
+ static void rtl8169_rx_hash(struct rtl8169_private *tp,
+@@ -5305,6 +5377,20 @@ static void rtl8169_rx_hash(struct rtl81
+ 	if (!(tp->dev->features & NETIF_F_RXHASH))
+ 		return;
+ 
++	if (tp->init_rx_desc_type == RX_DESC_TYPE_V3) {
++		const struct RxDescV3 *v3 = container_of(desc, struct RxDescV3,
++							 desc);
++
++		rss_header_info = le16_to_cpu(v3->hdr_info);
++		if (!(rss_header_info & RXS_RSS_L3_V3))
++			return;
++
++		skb_set_hash(skb, le32_to_cpu(v3->rss_result),
++			     (rss_header_info & RXS_RSS_L4_V3) ?
++			     PKT_HASH_TYPE_L4 : PKT_HASH_TYPE_L3);
++		return;
++	}
++
+ 	rss_header_info = le32_to_cpu(desc->rss_dword.rss_info);
+ 
+ 	if (!(rss_header_info & RXS_RSS_L3_TYPE_MASK))
+@@ -5319,11 +5405,23 @@ static void rtl8169_rx_hash(struct rtl81
+ 
+ static void rtl8169_rx_csum(struct rtl8169_private *tp,
+ 			    struct sk_buff *skb,
++			    struct RxDesc *desc,
+ 			    u32 opts1)
+ {
+ 	bool csum_ok = false;
++	u32 opts2;
+ 
+ 	switch (tp->init_rx_desc_type) {
++	case RX_DESC_TYPE_V3:
++		/* The chip also sets the failure flag of the other
++		 * protocol (a TCP frame carries UDPF); check only the
++		 * matching one.
++		 */
++		opts2 = le32_to_cpu(desc->rss_opts2);
++		if (((opts2 & RX_TCPT_V3) && !(opts2 & (RX_TCPF_V3 | RX_IPF_V3))) ||
++		    ((opts2 & RX_UDPT_V3) && !(opts2 & (RX_UDPF_V3 | RX_IPF_V3))))
++			csum_ok = true;
++		break;
+ 	case RX_DESC_TYPE_RSS:
+ 		if (((opts1 & RX_TCPT_DESC_RSS) && !(opts1 & RX_TCPF_DESC_RSS)) ||
+ 		    ((opts1 & RX_UDPT_DESC_RSS) && !(opts1 & RX_UDPF_DESC_RSS)))
+@@ -5348,6 +5446,7 @@ static __le32 rtl8169_rx_desc_opts1(stru
+ {
+ 	switch (tp->init_rx_desc_type) {
+ 	case RX_DESC_TYPE_RSS:
++	case RX_DESC_TYPE_V3:
+ 		return READ_ONCE(desc->rss_opts1);
+ 	default:
+ 		return READ_ONCE(desc->opts1);
+@@ -5359,6 +5458,17 @@ static bool rtl8169_check_rx_desc_error(
+ 					u32 status)
+ {
+ 	switch (tp->init_rx_desc_type) {
++	case RX_DESC_TYPE_V3:
++		if (unlikely(status & RX_RES_V3)) {
++			u64_stats_update_begin(&ring->stats.syncp);
++			if (status & (RX_RWT_V3 | RX_RUNT_V3))
++				ring->stats.rx_length_errors++;
++			if (status & RX_CRC_V3)
++				ring->stats.rx_crc_errors++;
++			u64_stats_update_end(&ring->stats.syncp);
++			return true;
++		}
++		break;
+ 	case RX_DESC_TYPE_RSS:
+ 		if (unlikely(status & RX_RES_RSS)) {
+ 			u64_stats_update_begin(&ring->stats.syncp);
+@@ -5397,7 +5507,7 @@ static int rtl_rx(struct net_device *dev
+ 
+ 	for (count = 0; count < budget; count++, ring->cur_rx++) {
+ 		unsigned int pkt_size, entry = ring->cur_rx % NUM_RX_DESC;
+-		struct RxDesc *desc = ring->rx_desc_array + entry;
++		struct RxDesc *desc = rtl8169_rx_desc(tp, ring, entry);
+ 		struct sk_buff *skb;
+ 		const void *rx_buf;
+ 		dma_addr_t addr;
+@@ -5427,6 +5537,10 @@ static int rtl_rx(struct net_device *dev
+ 			if (tp->init_rx_desc_type == RX_DESC_TYPE_DEFAULT) {
+ 				if (status & RxRWT || !(status & (RxRUNT | RxCRC)))
+ 					goto release_descriptor;
++			} else if (tp->init_rx_desc_type == RX_DESC_TYPE_V3) {
++				if (status & RX_RWT_V3 ||
++				    !(status & (RX_RUNT_V3 | RX_CRC_V3)))
++					goto release_descriptor;
+ 			} else {
+ 				if (!(status & (RXRUNT_RSS | RXCRC_RSS)))
+ 					goto release_descriptor;
+@@ -5444,7 +5558,7 @@ static int rtl_rx(struct net_device *dev
+ 		/* The driver does not support incoming fragmented frames.
+ 		 * They are seen as a symptom of over-mtu sized frames.
+ 		 */
+-		if (unlikely(rtl8169_fragmented_frame(status))) {
++		if (unlikely(rtl8169_fragmented_frame(tp, status))) {
+ 			u64_stats_update_begin(&ring->stats.syncp);
+ 			ring->stats.rx_dropped++;
+ 			ring->stats.rx_length_errors++;
+@@ -5474,7 +5588,7 @@ static int rtl_rx(struct net_device *dev
+ 			rtl8169_rx_hash(tp, desc, skb);
+ 			skb_record_rx_queue(skb, ring - tp->rx_ring);
+ 		}
+-		rtl8169_rx_csum(tp, skb, status);
++		rtl8169_rx_csum(tp, skb, desc, status);
+ 		skb->protocol = eth_type_trans(skb, dev);
+ 
+ 		rtl8169_rx_vlan_tag(tp, desc, skb);
+@@ -5489,7 +5603,7 @@ static int rtl_rx(struct net_device *dev
+ 
+ 		dev_sw_netstats_rx_add(dev, pkt_size);
+ release_descriptor:
+-		if (tp->init_rx_desc_type == RX_DESC_TYPE_RSS)
++		if (rtl8169_rx_desc_rss_layout(tp))
+ 			desc->rss_addr = cpu_to_le64(ring->rx_buf_dma_addr[entry]);
+ 		rtl8169_mark_to_asic(tp, desc);
+ 	}

@@ -1,0 +1,148 @@
+From 5e3c5a2b85da973c1f20c93ccc9b251da1c64142 Mon Sep 17 00:00:00 2001
+From: Javen Xu <javen_xu@realsil.com.cn>
+Date: Sat, 24 Jan 2026 22:27:24 +0100
+Subject: [PATCH] r8169: add support for extended chip version id and
+ RTL9151AS
+
+The bits in register TxConfig used for chip identification aren't
+sufficient for the number of upcoming chip versions. Therefore a register
+is added with extended chip version information, for compatibility
+purposes it's called TX_CONFIG_V2. First chip to use the extended chip
+identification is RTL9151AS.
+
+Signed-off-by: Javen Xu <javen_xu@realsil.com.cn>
+[hkallweit1@gmail.com: add support for extended XID where XID is printed]
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/a3525b74-a1aa-43f6-8413-56615f6fa795@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169.h      |  3 +-
+ drivers/net/ethernet/realtek/r8169_main.c | 45 +++++++++++++++++++----
+ 2 files changed, 39 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169.h
++++ b/drivers/net/ethernet/realtek/r8169.h
+@@ -72,7 +72,8 @@ enum mac_version {
+ 	RTL_GIGA_MAC_VER_70,
+ 	RTL_GIGA_MAC_VER_80,
+ 	RTL_GIGA_MAC_NONE,
+-	RTL_GIGA_MAC_VER_LAST = RTL_GIGA_MAC_NONE - 1
++	RTL_GIGA_MAC_VER_LAST = RTL_GIGA_MAC_NONE - 1,
++	RTL_GIGA_MAC_VER_EXTENDED
+ };
+ 
+ struct rtl8169_private;
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -96,8 +96,8 @@
+ #define JUMBO_16K	(SZ_16K - VLAN_ETH_HLEN - ETH_FCS_LEN)
+ 
+ static const struct rtl_chip_info {
+-	u16 mask;
+-	u16 val;
++	u32 mask;
++	u32 val;
+ 	enum mac_version mac_version;
+ 	const char *name;
+ 	const char *fw_name;
+@@ -206,10 +206,21 @@ static const struct rtl_chip_info {
+ 	{ 0xfc8, 0x040,	RTL_GIGA_MAC_VER_03, "RTL8110s" },
+ 	{ 0xfc8, 0x008,	RTL_GIGA_MAC_VER_02, "RTL8169s" },
+ 
++	/* extended chip version*/
++	{ 0x7cf, 0x7c8, RTL_GIGA_MAC_VER_EXTENDED },
++
+ 	/* Catch-all */
+ 	{ 0x000, 0x000,	RTL_GIGA_MAC_NONE }
+ };
+ 
++static const struct rtl_chip_info rtl_chip_infos_extended[] = {
++	{ 0x7fffffff, 0x00000000, RTL_GIGA_MAC_VER_64, "RTL9151AS",
++	  FIRMWARE_9151A_1},
++
++	/* Catch-all */
++	{ 0x00000000, 0x00000000, RTL_GIGA_MAC_NONE }
++};
++
+ static const struct pci_device_id rtl8169_pci_tbl[] = {
+ 	{ PCI_VDEVICE(REALTEK,	0x2502) },
+ 	{ PCI_VDEVICE(REALTEK,	0x2600) },
+@@ -256,6 +267,8 @@ enum rtl_registers {
+ 	IntrStatus	= 0x3e,
+ 
+ 	TxConfig	= 0x40,
++	/* Extended chip version id */
++	TX_CONFIG_V2	= 0x60b0,
+ #define	TXCFG_AUTO_FIFO			(1 << 7)	/* 8111e-vl */
+ #define	TXCFG_EMPTY			(1 << 11)	/* 8111e-vl */
+ 
+@@ -2423,7 +2436,7 @@ static const struct ethtool_ops rtl8169_
+ 	.get_eth_ctrl_stats	= rtl8169_get_eth_ctrl_stats,
+ };
+ 
+-static const struct rtl_chip_info *rtl8169_get_chip_version(u16 xid, bool gmii)
++static const struct rtl_chip_info *rtl8169_get_chip_version(u32 xid, bool gmii)
+ {
+ 	/* Chips combining a 1Gbps MAC with a 100Mbps PHY */
+ 	static const struct rtl_chip_info rtl8106eus_info = {
+@@ -2449,6 +2462,15 @@ static const struct rtl_chip_info *rtl81
+ 	return p;
+ }
+ 
++static const struct rtl_chip_info *rtl8169_get_extended_chip_version(u32 xid2)
++{
++	const struct rtl_chip_info *p = rtl_chip_infos_extended;
++
++	while ((xid2 & p->mask) != p->val)
++		p++;
++	return p;
++}
++
+ static void rtl_release_firmware(struct rtl8169_private *tp)
+ {
+ 	if (tp->rtl_fw) {
+@@ -5576,11 +5598,12 @@ static bool rtl_aspm_is_safe(struct rtl8
+ static int rtl_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+ {
+ 	const struct rtl_chip_info *chip;
++	const char *ext_xid_str = "";
+ 	struct rtl8169_private *tp;
+ 	int jumbo_max, region, rc;
+ 	struct net_device *dev;
+ 	u32 txconfig;
+-	u16 xid;
++	u32 xid;
+ 
+ 	dev = devm_alloc_etherdev(&pdev->dev, sizeof (*tp));
+ 	if (!dev)
+@@ -5628,10 +5651,16 @@ static int rtl_init_one(struct pci_dev *
+ 
+ 	/* Identify chip attached to board */
+ 	chip = rtl8169_get_chip_version(xid, tp->supports_gmii);
++
++	if (chip->mac_version == RTL_GIGA_MAC_VER_EXTENDED) {
++		ext_xid_str = "ext";
++		xid = RTL_R32(tp, TX_CONFIG_V2);
++		chip = rtl8169_get_extended_chip_version(xid);
++	}
+ 	if (chip->mac_version == RTL_GIGA_MAC_NONE)
+ 		return dev_err_probe(&pdev->dev, -ENODEV,
+-				     "unknown chip XID %03x, contact r8169 maintainers (see MAINTAINERS file)\n",
+-				     xid);
++				     "unknown chip %sXID %x, contact r8169 maintainers (see MAINTAINERS file)\n",
++				     ext_xid_str, xid);
+ 	tp->mac_version = chip->mac_version;
+ 	tp->fw_name = chip->fw_name;
+ 
+@@ -5770,8 +5799,8 @@ static int rtl_init_one(struct pci_dev *
+ 			tp->leds = rtl8168_init_leds(dev);
+ 	}
+ 
+-	netdev_info(dev, "%s, %pM, XID %03x, IRQ %d\n",
+-		    chip->name, dev->dev_addr, xid, tp->irq);
++	netdev_info(dev, "%s, %pM, %sXID %x, IRQ %d\n",
++		    chip->name, dev->dev_addr, ext_xid_str, xid, tp->irq);
+ 
+ 	if (jumbo_max)
+ 		netdev_info(dev, "jumbo features [frames: %d bytes, tx checksumming: %s]\n",

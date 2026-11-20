@@ -1,0 +1,42 @@
+From 1479493c91fc14b8387db01c0442cd1508c325e6 Mon Sep 17 00:00:00 2001
+From: javen <javen_xu@realsil.com.cn>
+Date: Tue, 11 Nov 2025 17:28:51 +0800
+Subject: [PATCH] r8169: add support for RTL8125K
+
+This adds support for chip RTL8125K. Its XID is 0x68a. It is basically
+based on the one with XID 0x688, but with different firmware file.
+
+Signed-off-by: javen <javen_xu@realsil.com.cn>
+Reviewed-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://patch.msgid.link/20251111092851.3371-1-javen_xu@realsil.com.cn
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -57,6 +57,7 @@
+ #define FIRMWARE_8125B_2	"rtl_nic/rtl8125b-2.fw"
+ #define FIRMWARE_8125D_1	"rtl_nic/rtl8125d-1.fw"
+ #define FIRMWARE_8125D_2	"rtl_nic/rtl8125d-2.fw"
++#define FIRMWARE_8125K_1	"rtl_nic/rtl8125k-1.fw"
+ #define FIRMWARE_8125BP_2	"rtl_nic/rtl8125bp-2.fw"
+ #define FIRMWARE_8126A_2	"rtl_nic/rtl8126a-2.fw"
+ #define FIRMWARE_8126A_3	"rtl_nic/rtl8126a-3.fw"
+@@ -110,6 +111,7 @@ static const struct rtl_chip_info {
+ 	{ 0x7cf, 0x681,	RTL_GIGA_MAC_VER_66, "RTL8125BP", FIRMWARE_8125BP_2 },
+ 
+ 	/* 8125D family. */
++	{ 0x7cf, 0x68a, RTL_GIGA_MAC_VER_64, "RTL8125K", FIRMWARE_8125K_1 },
+ 	{ 0x7cf, 0x689,	RTL_GIGA_MAC_VER_64, "RTL8125D", FIRMWARE_8125D_2 },
+ 	{ 0x7cf, 0x688,	RTL_GIGA_MAC_VER_64, "RTL8125D", FIRMWARE_8125D_1 },
+ 
+@@ -770,6 +772,7 @@ MODULE_FIRMWARE(FIRMWARE_8125A_3);
+ MODULE_FIRMWARE(FIRMWARE_8125B_2);
+ MODULE_FIRMWARE(FIRMWARE_8125D_1);
+ MODULE_FIRMWARE(FIRMWARE_8125D_2);
++MODULE_FIRMWARE(FIRMWARE_8125K_1);
+ MODULE_FIRMWARE(FIRMWARE_8125BP_2);
+ MODULE_FIRMWARE(FIRMWARE_8126A_2);
+ MODULE_FIRMWARE(FIRMWARE_8126A_3);

@@ -1,0 +1,80 @@
+From: Vlad Banea <montrealtango@gmail.com>
+Subject: [RFC net-next 5/5] r8169: enable RSS on the RTL8125B
+Date: Wed, 11 Nov 2026 17:01:14 -0500
+
+The RTL8125B has four RSS queues with the vector-map interrupt model:
+RX queue N on vector N, TX on 16, link change on 21, and at least 22
+vectors. RSS requires the type 3 descriptor. The RTL8125A has neither,
+so enable this for RTL_GIGA_MAC_VER_63 only.
+
+Hash on TCP and IP only: the RTL8125B does not spread UDP flows by port.
+
+Signed-off-by: Vlad Banea <montrealtango@gmail.com>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 27 ++++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -77,6 +77,7 @@
+ #define R8169_TX_STOP_THRS	(MAX_SKB_FRAGS + 1)
+ #define R8169_TX_START_THRS	(2 * R8169_TX_STOP_THRS)
+ #define R8169_MAX_RX_QUEUES	8
++#define R8125B_MAX_RX_QUEUES	4
+ #define R8169_DEFAULT_RX_QUEUES	1
+ #define R8169_MAX_TX_QUEUES	1
+ #define R8169_IRQ_DEFAULT	1
+@@ -876,6 +877,13 @@ struct rtl_vec_map {
+ 	u8 max_nvecs;
+ };
+ 
++static const struct rtl_vec_map rtl_vec_map_8125b = {
++	.tx		= 16,
++	.linkchg	= 21,
++	.min_nvecs	= 22,
++	.max_nvecs	= 32,
++};
++
+ static const struct rtl_vec_map rtl_vec_map_8127 = {
+ 	.tx		= 8,
+ 	.linkchg	= 29,
+@@ -1830,7 +1838,8 @@ static enum rtl_sfp_mode rtl_get_sfp_mod
+ 
+ static bool rtl_hw_support_rss(struct rtl8169_private *tp)
+ {
+-	return tp->mac_version == RTL_GIGA_MAC_VER_80;
++	return tp->mac_version == RTL_GIGA_MAC_VER_63 ||
++	       tp->mac_version == RTL_GIGA_MAC_VER_80;
+ }
+ 
+ static enum rtl_dash_type rtl_get_dash_type(struct rtl8169_private *tp)
+@@ -2957,6 +2966,20 @@ static void rtl_setup_rx_params(struct r
+ {
+ 	tp->num_rx_rings = 1;
+ 	switch (tp->mac_version) {
++	case RTL_GIGA_MAC_VER_63:
++		/* The UDP hash types do not spread UDP flows by port on the
++		 * RTL8125B, so hash TCP and IP only.
++		 */
++		tp->hw_supp_num_rx_queues = R8125B_MAX_RX_QUEUES;
++		tp->rss_data->hw_supp_indir_tbl_entries = RTL_MAX_INDIRECTION_TABLE_ENTRIES;
++		tp->rss_data->hash_types = RSS_CTRL_TCP_IPV4_SUPP |
++					   RSS_CTRL_IPV4_SUPP |
++					   RSS_CTRL_IPV6_SUPP |
++					   RSS_CTRL_IPV6_EXT_SUPP |
++					   RSS_CTRL_TCP_IPV6_SUPP |
++					   RSS_CTRL_TCP_IPV6_EXT_SUPP;
++		tp->rss_desc_type = RX_DESC_TYPE_V3;
++		break;
+ 	case RTL_GIGA_MAC_VER_80:
+ 		tp->hw_supp_num_rx_queues = R8169_MAX_RX_QUEUES;
+ 		tp->rss_data->hw_supp_indir_tbl_entries = RTL_MAX_INDIRECTION_TABLE_ENTRIES;
+@@ -6226,6 +6249,8 @@ static void rtl_set_irq_mask(struct rtl8
+ static const struct rtl_vec_map *rtl_get_vec_map(struct rtl8169_private *tp)
+ {
+ 	switch (tp->mac_version) {
++	case RTL_GIGA_MAC_VER_63:
++		return &rtl_vec_map_8125b;
+ 	case RTL_GIGA_MAC_VER_80:
+ 		return &rtl_vec_map_8127;
+ 	default:

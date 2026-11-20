@@ -1,0 +1,89 @@
+From: Vlad Banea <montrealtango@gmail.com>
+Subject: [RFC net-next 3/5] r8169: make the RSS hash types and descriptor type per chip
+Date: Wed, 11 Nov 2026 17:01:12 -0500
+
+The RSS hash types and the RX descriptor type used with RSS are those of
+the RTL8127A. Make both per chip, set in rtl_setup_rx_params().
+
+No functional change.
+
+Signed-off-by: Vlad Banea <montrealtango@gmail.com>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 29 +++++++++++++----------
+ 1 file changed, 17 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -854,6 +854,7 @@ struct rtl8169_rss_data {
+ 	u8 rss_key[RTL_RSS_KEY_SIZE];
+ 	u8 rss_indir_tbl[RTL_MAX_INDIRECTION_TABLE_ENTRIES];
+ 	unsigned int hw_supp_indir_tbl_entries;
++	u32 hash_types;		/* RSS_CTRL_*_SUPP bits to hash on */
+ };
+ 
+ struct rtl8169_private {
+@@ -880,6 +881,7 @@ struct rtl8169_private {
+ 	unsigned int irq_nvecs;
+ 	const struct rtl_vec_map *vec_map;	/* NULL: single vector only */
+ 	enum rx_desc_type init_rx_desc_type;
++	enum rx_desc_type rss_desc_type;	/* layout used with RSS on */
+ 	struct clk *clk;
+ 	int speed;
+ 
+@@ -2898,6 +2900,15 @@ static void rtl_setup_rx_params(struct r
+ 	case RTL_GIGA_MAC_VER_80:
+ 		tp->hw_supp_num_rx_queues = R8169_MAX_RX_QUEUES;
+ 		tp->rss_data->hw_supp_indir_tbl_entries = RTL_MAX_INDIRECTION_TABLE_ENTRIES;
++		tp->rss_data->hash_types = RSS_CTRL_TCP_IPV4_SUPP |
++					   RSS_CTRL_IPV4_SUPP |
++					   RSS_CTRL_IPV6_SUPP |
++					   RSS_CTRL_IPV6_EXT_SUPP |
++					   RSS_CTRL_TCP_IPV6_SUPP |
++					   RSS_CTRL_TCP_IPV6_EXT_SUPP |
++					   RSS_CTRL_UDP_IPV4_SUPP |
++					   RSS_CTRL_UDP_IPV6_SUPP;
++		tp->rss_desc_type = RX_DESC_TYPE_RSS;
+ 		break;
+ 	default:
+ 		tp->hw_supp_num_rx_queues = R8169_DEFAULT_RX_QUEUES;
+@@ -3058,14 +3069,7 @@ static void rtl8169_set_rss_hash_opt(str
+ 	rss_ctrl = FIELD_PREP(RSS_CPU_NUM_MASK, ilog2(tp->num_rx_rings));
+ 
+ 	/* Perform hash on these packet types */
+-	rss_ctrl |= RSS_CTRL_TCP_IPV4_SUPP |
+-		    RSS_CTRL_IPV4_SUPP |
+-		    RSS_CTRL_IPV6_SUPP |
+-		    RSS_CTRL_IPV6_EXT_SUPP |
+-		    RSS_CTRL_TCP_IPV6_SUPP |
+-		    RSS_CTRL_TCP_IPV6_EXT_SUPP |
+-		    RSS_CTRL_UDP_IPV4_SUPP |
+-		    RSS_CTRL_UDP_IPV6_SUPP;
++	rss_ctrl |= tp->rss_data->hash_types;
+ 
+ 	rss_ctrl |= FIELD_PREP(RSS_HASH_MASK,
+ 			       ilog2(tp->rss_data->hw_supp_indir_tbl_entries));
+@@ -4264,11 +4268,12 @@ static void rtl_hw_start_8125_common(str
+ 	    tp->mac_version == RTL_GIGA_MAC_VER_80)
+ 		RTL_W8(tp, 0xD8, RTL_R8(tp, 0xD8) & ~0x02);
+ 
+-	/* enable rx descriptor type v4 and set queue num for rss */
++	/* set queue num for rss and enable its rx descriptor type */
+ 	if (tp->num_rx_rings > 1) {
+ 		rtl8125_set_rx_q_num(tp);
+-		RTL_W8(tp, RTL_DESC_TYPE_CTRL,
+-		       RTL_R8(tp, RTL_DESC_TYPE_CTRL) | RTL_DESC_TYPE_RSS);
++		if (tp->init_rx_desc_type == RX_DESC_TYPE_RSS)
++			RTL_W8(tp, RTL_DESC_TYPE_CTRL,
++			       RTL_R8(tp, RTL_DESC_TYPE_CTRL) | RTL_DESC_TYPE_RSS);
+ 	}
+ 
+ 	if (tp->mac_version == RTL_GIGA_MAC_VER_80)
+@@ -6132,7 +6137,7 @@ static void rtl8169_set_rx_ring_num(stru
+ 		tp->num_rx_rings = rounddown_pow_of_two(min(rss_queue_num,
+ 							    tp->hw_supp_num_rx_queues));
+ 		if (tp->num_rx_rings >= 2)
+-			tp->init_rx_desc_type = RX_DESC_TYPE_RSS;
++			tp->init_rx_desc_type = tp->rss_desc_type;
+ 	}
+ }
+ 

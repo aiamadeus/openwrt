@@ -1,0 +1,40 @@
+From 28c0074fd4b79c1bae561ca8ea2bfa6bb47a9f46 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Thu, 13 Nov 2025 22:09:08 +0100
+Subject: [PATCH] r8169: bail out from probe if fiber mode is detected on
+ RTL8127AF
+
+It was reported that on a card with RTL8127AF (SFP + DAC) link-up isn't
+detected. Realtek hides the SFP behind the internal PHY, which isn't
+behaving fully compliance with clause 22 any longer in fiber mode.
+Due to not having access to chip documentation there isn't much I can
+do for now. Instead of silently failing to detect link-up in fiber mode,
+inform the user that fiber mode isn't support and bail out.
+
+The logic to detect fiber mode is borrowed from Realtek's r8127 driver.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://patch.msgid.link/fab6605a-54e2-4f54-b194-11c2b9caaaa9@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -5460,6 +5460,15 @@ static int rtl_init_one(struct pci_dev *
+ 	}
+ 	tp->aspm_manageable = !rc;
+ 
++	/* Fiber mode on RTL8127AF isn't supported */
++	if (rtl_is_8125(tp)) {
++		u16 data = r8168_mac_ocp_read(tp, 0xd006);
++
++		if ((data & 0xff) == 0x07)
++			return dev_err_probe(&pdev->dev, -ENODEV,
++					     "Fiber mode not supported\n");
++	}
++
+ 	tp->dash_type = rtl_get_dash_type(tp);
+ 	tp->dash_enabled = rtl_dash_is_enabled(tp);
+ 

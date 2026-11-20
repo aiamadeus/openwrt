@@ -1,0 +1,226 @@
+From: Vlad Banea <montrealtango@gmail.com>
+Subject: [RFC net-next 2/5] r8169: describe the vector-map interrupt layout per chip
+Date: Wed, 11 Nov 2026 17:01:11 -0500
+
+The vector-map interrupt model hard-codes the RTL8127A's MSI-X layout.
+Other chips put the TX and link change vectors elsewhere, so move the
+layout into a per-chip struct rtl_vec_map.
+
+No functional change.
+
+Signed-off-by: Vlad Banea <montrealtango@gmail.com>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 79 ++++++++++++++---------
+ 1 file changed, 48 insertions(+), 31 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -80,8 +80,6 @@
+ #define R8169_MAX_RX_QUEUES	8
+ #define R8169_DEFAULT_RX_QUEUES	1
+ #define R8169_MAX_TX_QUEUES	1
+-#define R8127_MAX_NUM_IRQVEC	32
+-#define R8127_MIN_NUM_IRQVEC	30
+ #define R8169_IRQ_DEFAULT	1
+ #define RTL_RSS_KEY_SIZE	40
+ #define RSS_CPU_NUM_MASK	GENMASK(18, 16)
+@@ -485,7 +483,6 @@ enum rtl8125_registers {
+ 	IMR_SET_VEC_MAP_REG	= 0x0d0c,
+ };
+ 
+-#define MSIX_ID_VEC_MAP_LINKCHG	29
+ #define LEDSEL_MASK_8125	0x23f
+ 
+ #define RX_VLAN_INNER_8125	BIT(22)
+@@ -619,9 +616,6 @@ enum rtl_register_content {
+ 
+ 	/* magic enable v2 */
+ 	MagicPacket_v2	= (1 << 16),	/* Wake up when receives a Magic Packet */
+-#define	ISRIMR_LINKCHG	BIT(29)
+-#define	ISRIMR_TOK_Q0	BIT(8)
+-#define	ISRIMR_ROK_Q0	BIT(0)
+ #define RTL_DESC_TYPE_CTRL		0xd8
+ #define RSS_KEY_REG			0x4600
+ #define RSS_INDIRECTION_TBL_REG		0x4700
+@@ -839,6 +833,23 @@ enum rtl_sfp_mode {
+ 	RTL_SFP_8127_ATF,
+ };
+ 
++/* Vector-map MSI-X layout. RX queue N uses vector N; a source's bit in
++ * the vector-map IMR/ISR registers is its vector number.
++ */
++struct rtl_vec_map {
++	u8 tx;		/* TX completion */
++	u8 linkchg;	/* link change */
++	u8 min_nvecs;	/* vectors that must be allocated */
++	u8 max_nvecs;
++};
++
++static const struct rtl_vec_map rtl_vec_map_8127 = {
++	.tx		= 8,
++	.linkchg	= 29,
++	.min_nvecs	= 30,
++	.max_nvecs	= 32,
++};
++
+ struct rtl8169_rss_data {
+ 	u8 rss_key[RTL_RSS_KEY_SIZE];
+ 	u8 rss_indir_tbl[RTL_MAX_INDIRECTION_TABLE_ENTRIES];
+@@ -867,6 +878,7 @@ struct rtl8169_private {
+ 	unsigned int hw_supp_num_rx_queues;
+ 	struct rtl8169_rss_data *rss_data;
+ 	unsigned int irq_nvecs;
++	const struct rtl_vec_map *vec_map;	/* NULL: single vector only */
+ 	enum rx_desc_type init_rx_desc_type;
+ 	struct clk *clk;
+ 	int speed;
+@@ -4745,7 +4757,7 @@ static void rtl8169_napi_disable(struct
+ 	if (tp->irq_nvecs > 1) {
+ 		for (int i = 0; i < tp->num_rx_rings; i++)
+ 			napi_disable(&tp->rtl8169_napi[i]);
+-		napi_disable(&tp->rtl8169_napi[R8169_MAX_RX_QUEUES]);
++		napi_disable(&tp->rtl8169_napi[tp->vec_map->tx]);
+ 	} else {
+ 		napi_disable(&tp->rtl8169_napi[0]);
+ 	}
+@@ -4756,7 +4768,7 @@ static void rtl8169_napi_enable(struct r
+ 	if (tp->irq_nvecs > 1) {
+ 		for (int i = 0; i < tp->num_rx_rings; i++)
+ 			napi_enable(&tp->rtl8169_napi[i]);
+-		napi_enable(&tp->rtl8169_napi[R8169_MAX_RX_QUEUES]);
++		napi_enable(&tp->rtl8169_napi[tp->vec_map->tx]);
+ 	} else {
+ 		napi_enable(&tp->rtl8169_napi[0]);
+ 	}
+@@ -5525,9 +5537,9 @@ static void rtl8169_free_one_irq(struct
+ 	napi = &tp->rtl8169_napi[i];
+ 
+ 	if (tp->irq_nvecs > 1) {
+-		if (i < tp->num_rx_rings || i == R8169_MAX_RX_QUEUES)
++		if (i < tp->num_rx_rings || i == tp->vec_map->tx)
+ 			free_irq(irq, napi);
+-		else if (i == MSIX_ID_VEC_MAP_LINKCHG)
++		else if (i == tp->vec_map->linkchg)
+ 			free_irq(irq, tp);
+ 	} else {
+ 		free_irq(irq, napi);
+@@ -5581,7 +5593,7 @@ static irqreturn_t rtl8169_interrupt_oth
+ {
+ 	struct rtl8169_private *tp = dev_instance;
+ 
+-	rtl8169_clear_hw_isr(tp, MSIX_ID_VEC_MAP_LINKCHG);
++	rtl8169_clear_hw_isr(tp, tp->vec_map->linkchg);
+ 	if (tp->phydev)
+ 		phy_mac_interrupt(tp->phydev);
+ 	else if (tp->sfp_mode)
+@@ -5605,11 +5617,11 @@ static int rtl8169_request_irq(struct rt
+ 		irq = pci_irq_vector(pdev, i);
+ 
+ 		if (tp->irq_nvecs > 1) {
+-			/* RX: 0~7, TX: 8*/
+-			if (i < tp->num_rx_rings || i == R8169_MAX_RX_QUEUES)
++			/* RX queue N on vector N, TX and link at vec_map */
++			if (i < tp->num_rx_rings || i == tp->vec_map->tx)
+ 				rc = request_irq(irq, rtl8169_interrupt_msix,
+ 						 irqflags, dev->name, napi);
+-			else if (i == MSIX_ID_VEC_MAP_LINKCHG)
++			else if (i == tp->vec_map->linkchg)
+ 				rc = request_irq(irq, rtl8169_interrupt_other,
+ 						 irqflags, dev->name, tp);
+ 			else
+@@ -5795,7 +5807,7 @@ static void rtl8169_netpoll(struct net_d
+ 	if (tp->irq_nvecs > 1) {
+ 		for (int i = 0; i < tp->num_rx_rings; i++)
+ 			rtl8169_interrupt_msix(0, &tp->rtl8169_napi[i]);
+-		rtl8169_interrupt_msix(0, &tp->rtl8169_napi[R8169_MAX_RX_QUEUES]);
++		rtl8169_interrupt_msix(0, &tp->rtl8169_napi[tp->vec_map->tx]);
+ 	} else {
+ 		rtl8169_interrupt(0, &tp->rtl8169_napi[0]);
+ 	}
+@@ -6024,7 +6036,7 @@ static void r8169_free_napi(struct rtl81
+ 	if (tp->irq_nvecs > 1) {
+ 		for (int i = 0; i < tp->num_rx_rings; i++)
+ 			netif_napi_del(&tp->rtl8169_napi[i]);
+-		netif_napi_del(&tp->rtl8169_napi[R8169_MAX_RX_QUEUES]);
++		netif_napi_del(&tp->rtl8169_napi[tp->vec_map->tx]);
+ 	} else {
+ 		netif_napi_del(&tp->rtl8169_napi[0]);
+ 	}
+@@ -6081,9 +6093,9 @@ static const struct net_device_ops rtl_n
+ static void rtl_set_irq_mask(struct rtl8169_private *tp)
+ {
+ 	if (tp->irq_nvecs > 1) {
+-		tp->irq_mask = ISRIMR_LINKCHG | ISRIMR_TOK_Q0;
++		tp->irq_mask = BIT(tp->vec_map->linkchg) | BIT(tp->vec_map->tx);
+ 		for (int i = 0; i < tp->num_rx_rings; i++)
+-			tp->irq_mask |= ISRIMR_ROK_Q0 << i;
++			tp->irq_mask |= BIT(i);
+ 	} else {
+ 		tp->irq_mask = RxOK | RxErr | TxOK | TxErr | LinkChg;
+ 
+@@ -6092,18 +6104,24 @@ static void rtl_set_irq_mask(struct rtl8
+ 	}
+ }
+ 
++static const struct rtl_vec_map *rtl_get_vec_map(struct rtl8169_private *tp)
++{
++	switch (tp->mac_version) {
++	case RTL_GIGA_MAC_VER_80:
++		return &rtl_vec_map_8127;
++	default:
++		return NULL;
++	}
++}
++
+ static int get_max_irq_nvecs(struct rtl8169_private *tp)
+ {
+-	if (tp->mac_version == RTL_GIGA_MAC_VER_80)
+-		return R8127_MAX_NUM_IRQVEC;
+-	return R8169_IRQ_DEFAULT;
++	return tp->vec_map ? tp->vec_map->max_nvecs : R8169_IRQ_DEFAULT;
+ }
+ 
+ static int get_min_irq_nvecs(struct rtl8169_private *tp)
+ {
+-	if (tp->mac_version == RTL_GIGA_MAC_VER_80)
+-		return R8127_MIN_NUM_IRQVEC;
+-	return R8169_IRQ_DEFAULT;
++	return tp->vec_map ? tp->vec_map->min_nvecs : R8169_IRQ_DEFAULT;
+ }
+ 
+ static void rtl8169_set_rx_ring_num(struct rtl8169_private *tp)
+@@ -6715,10 +6733,8 @@ static int rtl8169_poll_msix_tx(struct n
+ 	return 0;
+ }
+ 
+-/* RTL8127 MSI-X vector layout:
+- * Vectors 0 .. (MAX_RXQ - 1)			: Rx Queues
+- * Vectors MAX_RXQ .. (MAX_RXQ + MAX_TXQ - 1)	: Tx Queues
+- * NAPI is only allocated for data path
++/* Vector-map MSI-X: RX queue N on vector N, TX and link change on the
++ * chip's vec_map vectors. NAPI is only allocated for the data path.
+  */
+ static void r8169_init_napi(struct rtl8169_private *tp)
+ {
+@@ -6732,10 +6748,10 @@ static void r8169_init_napi(struct rtl81
+ 					   pci_irq_vector(tp->pci_dev, i));
+ 		}
+ 		netif_napi_add_tx(tp->dev,
+-				  &tp->rtl8169_napi[R8169_MAX_RX_QUEUES],
++				  &tp->rtl8169_napi[tp->vec_map->tx],
+ 				  rtl8169_poll_msix_tx);
+-		netif_napi_set_irq(&tp->rtl8169_napi[R8169_MAX_RX_QUEUES],
+-				   pci_irq_vector(tp->pci_dev, R8169_MAX_RX_QUEUES));
++		netif_napi_set_irq(&tp->rtl8169_napi[tp->vec_map->tx],
++				   pci_irq_vector(tp->pci_dev, tp->vec_map->tx));
+ 	} else {
+ 		netif_napi_add(tp->dev, &tp->rtl8169_napi[0], rtl8169_poll);
+ 		netif_napi_set_irq(&tp->rtl8169_napi[0],
+@@ -6901,6 +6917,7 @@ static int rtl_init_one(struct pci_dev *
+ 	rtl_hw_reset(tp);
+ 
+ 	rtl_setup_rx_params(tp);
++	tp->vec_map = rtl_get_vec_map(tp);
+ 
+ 	rc = rtl_alloc_irq(tp);
+ 	if (rc < 0)

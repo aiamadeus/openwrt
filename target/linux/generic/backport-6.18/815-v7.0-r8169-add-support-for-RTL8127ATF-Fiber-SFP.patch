@@ -1,0 +1,179 @@
+From fef0f545511f72223481aab1fd24d5f8f1c9d774 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Sat, 10 Jan 2026 16:15:32 +0100
+Subject: [PATCH] r8169: add support for RTL8127ATF (Fiber SFP)
+
+RTL8127ATF supports a SFP+ port for fiber modules (10GBASE-SR/LR/ER/ZR and
+DAC). The list of supported modes was provided by Realtek. According to the
+r8127 vendor driver also 1G modules are supported, but this needs some more
+complexity in the driver, and only 10G mode has been tested so far.
+Therefore mainline support will be limited to 10G for now.
+The SFP port signals are hidden in the chip IP and driven by firmware.
+Therefore mainline SFP support can't be used here.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Tested-by: Fabio Baltieri <fabio.baltieri@gmail.com>
+Link: https://patch.msgid.link/5c390273-458f-4d92-896b-3d85f2998d7d@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 89 ++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -31,6 +31,7 @@
+ #include <linux/unaligned.h>
+ #include <net/ip6_checksum.h>
+ #include <net/netdev_queues.h>
++#include <net/phy/realtek_phy.h>
+ 
+ #include "r8169.h"
+ #include "r8169_firmware.h"
+@@ -733,6 +734,7 @@ struct rtl8169_private {
+ 	unsigned supports_gmii:1;
+ 	unsigned aspm_manageable:1;
+ 	unsigned dash_enabled:1;
++	bool sfp_mode:1;
+ 	dma_addr_t counters_phys_addr;
+ 	struct rtl8169_counters *counters;
+ 	struct rtl8169_tc_offsets tc_offset;
+@@ -1097,6 +1099,10 @@ static int r8168_phy_ocp_read(struct rtl
+ 	if (rtl_ocp_reg_failure(reg))
+ 		return 0;
+ 
++	/* Return dummy MII_PHYSID2 in SFP mode to match SFP PHY driver */
++	if (tp->sfp_mode && reg == (OCP_STD_PHY_BASE + 2 * MII_PHYSID2))
++		return PHY_ID_RTL_DUMMY_SFP & 0xffff;
++
+ 	RTL_W32(tp, GPHY_OCP, reg << 15);
+ 
+ 	return rtl_loop_wait_high(tp, &rtl_ocp_gphy_cond, 25, 10) ?
+@@ -1154,6 +1160,46 @@ static void r8168_mac_ocp_modify(struct
+ 	raw_spin_unlock_irqrestore(&tp->mac_ocp_lock, flags);
+ }
+ 
++static void r8127_sfp_sds_phy_reset(struct rtl8169_private *tp)
++{
++	RTL_W8(tp, 0x2350, RTL_R8(tp, 0x2350) & ~BIT(0));
++	udelay(1);
++
++	RTL_W16(tp, 0x233a, 0x801f);
++	RTL_W8(tp, 0x2350, RTL_R8(tp, 0x2350) | BIT(0));
++	usleep_range(10, 20);
++}
++
++static void r8127_sfp_init_10g(struct rtl8169_private *tp)
++{
++	int val;
++
++	r8127_sfp_sds_phy_reset(tp);
++
++	RTL_W16(tp, 0x233a, 0x801a);
++	RTL_W16(tp, 0x233e, (RTL_R16(tp, 0x233e) & ~0x3003) | 0x1000);
++
++	r8168_phy_ocp_write(tp, 0xc40a, 0x0000);
++	r8168_phy_ocp_write(tp, 0xc466, 0x0003);
++	r8168_phy_ocp_write(tp, 0xc808, 0x0000);
++	r8168_phy_ocp_write(tp, 0xc80a, 0x0000);
++
++	val = r8168_phy_ocp_read(tp, 0xc804);
++	r8168_phy_ocp_write(tp, 0xc804, (val & ~0x000f) | 0x000c);
++}
++
++static void rtl_sfp_init(struct rtl8169_private *tp)
++{
++	if (tp->mac_version == RTL_GIGA_MAC_VER_80)
++		r8127_sfp_init_10g(tp);
++}
++
++static void rtl_sfp_reset(struct rtl8169_private *tp)
++{
++	if (tp->mac_version == RTL_GIGA_MAC_VER_80)
++		r8127_sfp_sds_phy_reset(tp);
++}
++
+ /* Work around a hw issue with RTL8168g PHY, the quirk disables
+  * PHY MCU interrupts before PHY power-down.
+  */
+@@ -2308,6 +2354,36 @@ static void rtl8169_get_eth_ctrl_stats(s
+ 		le32_to_cpu(tp->counters->rx_unknown_opcode);
+ }
+ 
++static int rtl8169_set_link_ksettings(struct net_device *ndev,
++				      const struct ethtool_link_ksettings *cmd)
++{
++	struct rtl8169_private *tp = netdev_priv(ndev);
++	struct phy_device *phydev = tp->phydev;
++	int duplex = cmd->base.duplex;
++	int speed = cmd->base.speed;
++
++	if (!tp->sfp_mode)
++		return phy_ethtool_ksettings_set(phydev, cmd);
++
++	if (cmd->base.autoneg != AUTONEG_DISABLE)
++		return -EINVAL;
++
++	if (!phy_check_valid(speed, duplex, phydev->supported))
++		return -EINVAL;
++
++	mutex_lock(&phydev->lock);
++
++	phydev->autoneg = AUTONEG_DISABLE;
++	phydev->speed = speed;
++	phydev->duplex = duplex;
++
++	rtl_sfp_init(tp);
++
++	mutex_unlock(&phydev->lock);
++
++	return 0;
++}
++
+ static const struct ethtool_ops rtl8169_ethtool_ops = {
+ 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+ 				     ETHTOOL_COALESCE_MAX_FRAMES,
+@@ -2327,7 +2403,7 @@ static const struct ethtool_ops rtl8169_
+ 	.get_eee		= rtl8169_get_eee,
+ 	.set_eee		= rtl8169_set_eee,
+ 	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
+-	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
++	.set_link_ksettings	= rtl8169_set_link_ksettings,
+ 	.get_ringparam		= rtl8169_get_ringparam,
+ 	.get_pause_stats	= rtl8169_get_pause_stats,
+ 	.get_pauseparam		= rtl8169_get_pauseparam,
+@@ -2435,6 +2511,9 @@ static void rtl8169_init_phy(struct rtl8
+ 	    tp->pci_dev->subsystem_device == 0xe000)
+ 		phy_write_paged(tp->phydev, 0x0001, 0x10, 0xf01b);
+ 
++	if (tp->sfp_mode)
++		rtl_sfp_init(tp);
++
+ 	/* We may have called phy_speed_down before */
+ 	phy_speed_up(tp->phydev);
+ 
+@@ -4800,6 +4879,10 @@ static void rtl8169_down(struct rtl8169_
+ 
+ 	phy_stop(tp->phydev);
+ 
++	/* Reset SerDes PHY to bring down fiber link */
++	if (tp->sfp_mode)
++		rtl_sfp_reset(tp);
++
+ 	rtl8169_update_counters(tp);
+ 
+ 	pci_clear_master(tp->pci_dev);
+@@ -5465,13 +5548,11 @@ static int rtl_init_one(struct pci_dev *
+ 	}
+ 	tp->aspm_manageable = !rc;
+ 
+-	/* Fiber mode on RTL8127AF isn't supported */
+ 	if (rtl_is_8125(tp)) {
+ 		u16 data = r8168_mac_ocp_read(tp, 0xd006);
+ 
+ 		if ((data & 0xff) == 0x07)
+-			return dev_err_probe(&pdev->dev, -ENODEV,
+-					     "Fiber mode not supported\n");
++			tp->sfp_mode = true;
+ 	}
+ 
+ 	tp->dash_type = rtl_get_dash_type(tp);

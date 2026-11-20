@@ -1,0 +1,26 @@
+From 5f22f5fb90516ed98886c4ae22d27edef92b8d1e Mon Sep 17 00:00:00 2001
+From: Javen Xu <javen_xu@realsil.com.cn>
+Date: Wed, 16 Sep 2026 16:13:06 +0800
+Subject: [PATCH] r8169: set eee_enable_default base on LPI cap
+
+When initializing phylink configuration, if LPI capabilities is
+non-zero, it indicates the hardware supports EEE, thus we enable it by
+default.
+
+Signed-off-by: Javen Xu <javen_xu@realsil.com.cn>
+Link: https://patch.msgid.link/20260916081306.184-1-javen_xu@realsil.com.cn
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -5941,6 +5941,7 @@ static int rtl_init_phylink(struct rtl81
+ 	tp->phylink_config.type = PHYLINK_NETDEV;
+ 	tp->phylink_config.mac_managed_pm = true;
+ 	tp->phylink_config.lpi_capabilities = rtl8169_get_lpi_caps(tp);
++	tp->phylink_config.eee_enabled_default = !!tp->phylink_config.lpi_capabilities;
+ 	tp->phylink_config.mac_capabilities |= MAC_ASYM_PAUSE | MAC_SYM_PAUSE;
+ 
+ 	switch (tp->sfp_mode) {

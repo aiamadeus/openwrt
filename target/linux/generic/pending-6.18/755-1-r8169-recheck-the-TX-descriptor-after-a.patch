@@ -1,0 +1,53 @@
+From: Vlad Banea <montrealtango@gmail.com>
+Subject: [RFC net-next 1/5] r8169: recheck the TX descriptor after a vector-map interrupt
+Date: Wed, 11 Nov 2026 17:01:10 -0500
+
+With the vector-map interrupt model the TX interrupt can arrive before
+the descriptor write-back is visible. rtl_tx() then stops at a
+descriptor that still looks owned, and the end of a burst stays
+unreaped. Once the BQL limit drops below the stranded bytes, the queue
+stops and the watchdog resets the chip.
+
+The legacy handler reads the interrupt status register before the poll
+runs; the vector-map handler only writes registers. Do as Realtek's
+driver does: if the first pending descriptor still looks owned, read a
+register and look again.
+
+Fixes: 677f8f8c4c5f ("r8169: add support for new interrupt mapping")
+Signed-off-by: Vlad Banea <montrealtango@gmail.com>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -5218,6 +5218,7 @@ static void rtl_tx(struct net_device *de
+ 		   int budget)
+ {
+ 	unsigned int dirty_tx, bytes_compl = 0, pkts_compl = 0;
++	bool recheck = tp->irq_nvecs > 1;
+ 	struct sk_buff *skb;
+ 
+ 	dirty_tx = tp->dirty_tx;
+@@ -5227,8 +5228,19 @@ static void rtl_tx(struct net_device *de
+ 		u32 status;
+ 
+ 		status = le32_to_cpu(READ_ONCE(tp->TxDescArray[entry].opts1));
+-		if (status & DescOwn)
+-			break;
++		if (status & DescOwn) {
++			/* The vector-map TX interrupt can arrive before the
++			 * descriptor write-back is visible. Read a register and
++			 * look again, as Realtek's driver does.
++			 */
++			if (!recheck)
++				break;
++			recheck = false;
++			RTL_R8(tp, IMR_CLEAR_VEC_MAP_REG);
++			status = le32_to_cpu(READ_ONCE(tp->TxDescArray[entry].opts1));
++			if (status & DescOwn)
++				break;
++		}
+ 
+ 		skb = tp->tx_skb[entry].skb;
+ 		rtl8169_unmap_tx_skb(tp, entry);
